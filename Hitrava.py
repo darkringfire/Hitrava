@@ -598,6 +598,36 @@ class HiActivity:
         if not self.stop or self.stop < data['t']:
             self.stop = data['t']
 
+    def fill_missing_data(self):
+        """ 
+        Add HR and cadence data it not exist 
+        """
+        last_hr = None
+        last_sr = None
+        last_rs = None
+        self.data_dict = dict(sorted(self.data_dict.items()))
+        for k, v in self.data_dict.items():
+            if 'hr' in v:
+                last_hr = v['hr']
+            elif last_hr is not None:
+                v['hr'] = last_hr
+            if 's-r' in v:
+                last_sr = v['s-r']
+            elif last_sr is not None:
+                v['s-r'] = last_sr
+            if 'rs' in v:
+                last_rs = v['rs']
+            elif last_rs is not None:
+                v['rs'] = last_rs
+            pass
+
+    def remove_no_speed(self):
+        """ Remove items without speed """
+        keys = list(self.data_dict.keys())
+        for k in keys:
+            if 'rs' not in self.data_dict[k]:
+                del self.data_dict[k]
+
     def get_segments(self) -> list:
         """ Returns the segment list.
             - For pool swimming activities, the segments were identified during parsing of the SWOLF data.
@@ -1050,6 +1080,9 @@ class HiTrackFile:
         finally:
             self._close_file()
 
+        # TODO add missing data
+        self.activity.fill_missing_data()
+        # self.activity.remove_no_speed()
         return self.activity
 
     def _close_file(self):
@@ -1684,22 +1717,24 @@ class TcxActivity:
 
                     if 'hr' in data:
                         el_heart_rate_bpm = xml_et.SubElement(el_trackpoint, 'HeartRateBpm')
-                        el_heart_rate_bpm.set('xsi:type', 'HeartRateInBeatsPerMinute_t')
+                        # el_heart_rate_bpm.set('xsi:type', 'HeartRateInBeatsPerMinute_t')
                         value = xml_et.SubElement(el_heart_rate_bpm, 'Value')
                         value.text = str(data['hr'])
 
                     if 's-r' in data:  # Step frequency (for walking and running)
-                        if self.hi_activity.get_activity_type() in (HiActivity.TYPE_WALK, HiActivity.TYPE_RUN,
+                        if self.hi_activity.get_activity_type() in (HiActivity.TYPE_WALK, HiActivity.TYPE_RUN, HiActivity.TYPE_INDOOR_RUN,
                                                                     HiActivity.TYPE_HIKE, HiActivity.TYPE_MOUNTAIN_HIKE,
                                                                     HiActivity.TYPE_CROSS_COUNTRY_RUN):
-                            el_extensions = xml_et.SubElement(el_trackpoint, 'Extensions')
-                            el_tpx = xml_et.SubElement(el_extensions, 'TPX')
-                            el_tpx.set('xmlns', 'http://www.garmin.com/xmlschemas/ActivityExtension/v2')
-                            el_run_cadence = xml_et.SubElement(el_tpx, 'RunCadence')
-                            # [Verified] Strava / TCX expects strides/minute (Strava displays steps/minute
-                            # in activity overview). The HiTrack information is in steps/minute. Divide by 2 to have
-                            # strides/minute in TCX.
-                            el_run_cadence.text = str(int(data['s-r'] / 2))
+                            el_cadence = xml_et.SubElement(el_trackpoint, 'Cadence')
+                            el_cadence.text = str(int(data['s-r'] / 2))
+                            # el_extensions = xml_et.SubElement(el_trackpoint, 'Extensions')
+                            # el_tpx = xml_et.SubElement(el_extensions, 'ns3:TPX')
+                            # # el_tpx.set('xmlns', 'http://www.garmin.com/xmlschemas/ActivityExtension/v2')
+                            # el_run_cadence = xml_et.SubElement(el_tpx, 'RunCadence')
+                            # # [Verified] Strava / TCX expects strides/minute (Strava displays steps/minute
+                            # # in activity overview). The HiTrack information is in steps/minute. Divide by 2 to have
+                            # # strides/minute in TCX.
+                            # el_run_cadence.text = str(int(data['s-r'] / 2))
             else:
                 # No detailed segment data. Create two (dummy) trackpoints at start and stop time of segment.
                 el_trackpoint = xml_et.SubElement(el_track, 'Trackpoint')
@@ -1943,6 +1978,8 @@ def _get_tz_aware_datetime(naive_datetime: dts, time_zone: tz):
     else:
         aware_datetime = utc_datetime
 
+    return dts.replace(naive_datetime, tzinfo=tz.utc)
+    # TODO Cancel timezone format
     return aware_datetime
 
 
@@ -2046,6 +2083,8 @@ def _init_argument_parser() -> argparse.ArgumentParser:
                            distance data as calculated from the raw HiTrack data. When not specified (default), all \
                            distances in the TCX files will be normalized to match the original Huawei distance.',
                            action='store_true')
+    # tcx_group.add_argument('--fix-hr-cad', help='Sort by time, add HR and cadence data to all trackpoints, remove without speed.')
+    # tcx_group.add_argument('--utc', help='Save time in UTC.')
 
     output_group = parser.add_argument_group('OUTPUT options')
     output_group.add_argument('--output_dir', help='The path to the directory to store the output files. The default \
