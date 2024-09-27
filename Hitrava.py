@@ -28,7 +28,7 @@ import xml.etree.cElementTree as xml_et
 from datetime import datetime as dts
 from datetime import timedelta as dts_delta
 from datetime import timezone as tz
-from zipfile import ZipFile as ZipFile
+from zipfile import ZipFile
 from typing import Any, Dict, List
 
 # External libraries that require installation
@@ -111,9 +111,8 @@ class HiActivity:
         if activity_type == self.TYPE_UNKNOWN:
             self._activity_type = self.TYPE_UNKNOWN
         else:
-            self.set_activity_type(
-                activity_type
-            )  # validate and set activity type of the activity
+            # validate and set activity type of the activity
+            self.set_activity_type(activity_type)
 
         # Will hold a set of parameters to auto-determine activity type
         self.activity_params = {}
@@ -794,22 +793,19 @@ class HiActivity:
             self.activity_params,
         )
 
+        self._activity_type = self.TYPE_OTHER
         # Filter out swimming
         if "swim" in self.activity_params:
             # Swimming detected
-            if "gps" not in self.activity_params:
-                self._activity_type = self.TYPE_POOL_SWIM
-            else:
-                self._activity_type = self.TYPE_OPEN_WATER_SWIM
+            self._activity_type = self.TYPE_OPEN_WATER_SWIM
             logging.getLogger(PROGRAM_NAME).debug(
                 "Activity type %s detected for activity %s",
                 self._activity_type,
                 self.activity_id,
             )
-            return self._activity_type
 
         # Walk / Run / Cycle
-        if "step frequency min" in self.activity_params:
+        elif "step frequency min" in self.activity_params:
             # Walk / Run / Cycle - Step frequency data available
             # For walking and running, the assumption is that step frequency data is available regardless whether
             # a fitness tracking device is used or not.
@@ -850,18 +846,26 @@ class HiActivity:
                 self._activity_type,
                 self.activity_id,
             )
-            return self._activity_type
-        else:
-            # Walk / Run / Cycle - no step frequency data available (e.g. activities registered using phone only).
-            # See above, since it is assumed that walking or running activities will always have step frequency records
-            # regardless whether a fitness tracking device was used or not, this must be a cycling activity.
-            self._activity_type = self.TYPE_CYCLE
-            logging.getLogger(PROGRAM_NAME).debug(
-                "Activity type %s detected using step frequency data for activity %s",
-                self._activity_type,
-                self.activity_id,
-            )
-            return self._activity_type
+        # else:
+        #     # Walk / Run / Cycle - no step frequency data available (e.g. activities registered using phone only).
+        #     # See above, since it is assumed that walking or running activities will always have step frequency records
+        #     # regardless whether a fitness tracking device was used or not, this must be a cycling activity.
+        #     self._activity_type = self.TYPE_CYCLE
+        #     logging.getLogger(PROGRAM_NAME).debug(
+        #         "Activity type %s detected using step frequency data for activity %s",
+        #         self._activity_type,
+        #         self.activity_id,
+        #     )
+
+        if "gps" not in self.activity_params:
+            if self._activity_type == self.TYPE_OPEN_WATER_SWIM:
+                self._activity_type = self.TYPE_POOL_SWIM
+            elif self._activity_type == self.TYPE_CYCLE:
+                self._activity_type = self.TYPE_INDOOR_CYCLE
+            elif self._activity_type == self.TYPE_RUN:
+                self._activity_type = self.TYPE_INDOOR_RUN
+
+        return self._activity_type
 
     def _calc_segments_and_distances(self):
         """Perform the following detailed data calculations for walk, run, or cycle activities:
@@ -1567,6 +1571,78 @@ class HiZip:
                         )
             json_filename = output_dir + "/" + zip_json_filename
             return json_filename
+        else:
+            logging.getLogger(PROGRAM_NAME).error(
+                "Invalid ZIP file or ZIP file not found <%s>", zip_filename
+            )
+            raise Exception(
+                "Invalid ZIP file or ZIP file not found <%s>", zip_filename)
+
+    @staticmethod
+    def extract_mod(
+        zip_filename: str, output_dir: str = OUTPUT_DIR, password: str = None
+    ):
+        _ZIP_SUBDIR = "files/"
+        _ZIP_SUBDIR_LEN = len(_ZIP_SUBDIR)
+        _MOTION_PATH_FILENAMES = f"{_ZIP_SUBDIR}HiTrack_*"
+
+        _WINDOWS_UNZIP_CMD = '7za e -aoa "-o%s" %s -bb1 -bse1 -bsp2 -sccUTF-8 "%s" -- "%s"'
+        logging.getLogger(PROGRAM_NAME).info(
+            "<%s> -> <%s> (password: %s)",
+            zip_filename,
+            output_dir,
+            password
+        )
+        if zipfile.is_zipfile(zip_filename):
+            if platform.system() == "Windows":
+                unzip_cmd = _WINDOWS_UNZIP_CMD % (
+                    output_dir,
+                    "-p%s" % password if password else "",
+                    zip_filename,
+                    _MOTION_PATH_FILENAMES,
+                )
+            # elif platform.system() == "Darwin":
+            #     unzip_cmd = _MACOS_UNZIP_CMD % (
+            #         zip_filename,
+            #         password,
+            #         output_dir,
+            #         zip_json_filename,
+            #     )
+            else:
+                logging.getLogger(PROGRAM_NAME).error(
+                    "Encrypted ZIP files not supported on platform %s",
+                    platform.system(),
+                )
+                raise NotImplementedError(
+                    "Encrypted ZIP files not supported on platform %s",
+                    platform.system(),
+                )
+            logging.getLogger(PROGRAM_NAME).info(
+                unzip_cmd
+            )
+            completed_process = subprocess.run(
+                unzip_cmd,
+                universal_newlines=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+            )
+            files_list = [f"{output_dir}/{f[(_ZIP_SUBDIR_LEN+2):]}"
+                          for f in completed_process.stdout.split("\n") if f.startswith('- ')]
+            logging.getLogger(PROGRAM_NAME).info(completed_process.stdout)
+            if completed_process.stderr:
+                logging.getLogger(PROGRAM_NAME).error(completed_process.stderr)
+            if completed_process.returncode != 0:
+                logging.getLogger(PROGRAM_NAME).error(
+                    "Error extracting files <%s> from encrypted ZIP file <%s>. Return code was %s",
+                    zip_filename,
+                    completed_process.returncode,
+                )
+                raise Exception(
+                    "Error extracting files from encrypted ZIP file <%s>. Return code was %s",
+                    zip_filename,
+                    completed_process.returncode,
+                )
+            return files_list
         else:
             logging.getLogger(PROGRAM_NAME).error(
                 "Invalid ZIP file or ZIP file not found <%s>", zip_filename
@@ -2423,17 +2499,33 @@ class TcxActivity:
 
         # Format and save the TCX XML file
         if not tcx_filename:
-            self.tcx_filename = self.save_dir + "/"
+            # self.tcx_filename = self.save_dir + "/"
+            # self.tcx_filename += self.hi_activity.activity_id
+            # self.tcx_filename += "_" + self.hi_activity.get_activity_type()
+            # if self.filename_suffix:
+            #     self.tcx_filename += self.filename_suffix
+            # self.tcx_filename += ".tcx"
             if self.filename_prefix:
-                # TODO verify timezone (un)aware display date / time
-                self.tcx_filename += dts.strftime(
-                    self.hi_activity.start, self.filename_prefix
-                )
-            self.tcx_filename += self.hi_activity.activity_id
-            self.tcx_filename += "_" + self.hi_activity.get_activity_type()
-            if self.filename_suffix:
-                self.tcx_filename += self.filename_suffix
-            self.tcx_filename += ".tcx"
+                filename_prefix = dts.strftime(
+                    self.hi_activity.start, self.filename_prefix)
+            else:
+                filename_prefix = "HiTrack_%s" % _get_tz_aware_datetime(
+                    self.hi_activity.start, self.hi_activity.time_zone
+                ).strftime("%Y%m%d_%H%M%S")
+
+            self.tcx_filename = "%s/%s_%s.tcx" % (
+                self.save_dir,
+                filename_prefix,
+                self.hi_activity.get_activity_type()
+            )
+            # tcx_filename = "%s/HiTrack_%s_%s.tcx" % (
+            #     args.output_dir,
+            #     _get_tz_aware_datetime(
+            #         hi_activity.start, hi_activity.time_zone
+            #     ).strftime("%Y%m%d_%H%M%S"),
+            #     tcx_activity.hi_activity.get_activity_type(),
+            # )
+
         else:
             self.tcx_filename = tcx_filename
         try:
@@ -2673,6 +2765,8 @@ def _init_argument_parser() -> argparse.ArgumentParser:
         "-f", "--file", help="The filename of a single HiTrack file to convert."
     )
     file_group.add_argument(
+        "--zip_mod", help="Zipfile from Huawei Health mod by Inquizitor.")
+    file_group.add_argument(
         "-s",
         "--sport",
         help="Force sport for the conversion. Sport will be auto-detected when \
@@ -2856,11 +2950,12 @@ def main():
         if args.use_original_filename:
             tcx_activity.save()
         else:
-            tcx_filename = "%s/HiTrack_%s.tcx" % (
+            tcx_filename = "%s/HiTrack_%s_%s.tcx" % (
                 args.output_dir,
                 _get_tz_aware_datetime(
                     hi_activity.start, hi_activity.time_zone
                 ).strftime("%Y%m%d_%H%M%S"),
+                tcx_activity.hi_activity.get_activity_type(),
             )
             tcx_activity.save(tcx_filename)
         logging.getLogger(PROGRAM_NAME).info("Converted %s", hi_activity)
@@ -2919,6 +3014,39 @@ def main():
             )
             tcx_activity.save()
             logging.getLogger(PROGRAM_NAME).info("Converted %s", hi_activity)
+    elif args.zip_mod:
+        hitrack_files_names = HiZip.extract_mod(args.zip_mod, args.output_dir, args.password)
+        for n, file_name in enumerate(hitrack_files_names, start=1):
+            try:
+                hitrack_file = HiTrackFile(file_name)
+                hi_activity = hitrack_file.parse()
+                tcx_activity = TcxActivity(
+                    hi_activity,
+                    tcx_xml_schema,
+                    args.output_dir,
+                    args.output_file_prefix,
+                    args.tcx_insert_altitude_data,
+                )
+                if args.use_original_filename:
+                    tcx_activity.save()
+                else:
+                    output_file_suffix = output_file_suffix_format % (n % 1000)
+                    tcx_filename = "%s/HiTrack_%s%s_%s.tcx" % (
+                        args.output_dir,
+                        _get_tz_aware_datetime(
+                            hi_activity.start, hi_activity.time_zone
+                        ).strftime("%Y%m%d_%H%M%S"),
+                        output_file_suffix,
+                        tcx_activity.hi_activity.get_activity_type(),
+                    )
+                    tcx_activity.save(tcx_filename)
+            except Exception as e:
+                logging.getLogger(PROGRAM_NAME).error(
+                    "Error parsing HiTrack file <%s> in tarball <%s>\n%s",
+                    hitrack_file,
+                    args.zip_mod,
+                    e,
+                )
 
 
 if __name__ == "__main__":
